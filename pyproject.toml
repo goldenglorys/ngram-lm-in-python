@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "ngram-in-python"
+version = "0.1.0"
+description = "ngram language model in python | streamlit"
+authors = ["goldenglorys <olusolagloryolamide@gmail.com>"]
+readme = "README.md"
+packages = [{include = "ngram_in_python"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+streamlit = "^1.36.0"
+matplotlib = "^3.9.1"
+seaborn = "^0.13.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
