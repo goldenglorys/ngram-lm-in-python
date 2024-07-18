@@ -1,317 +1,417 @@
-import streamlit as st
-import numpy as np
+import ast
+import itertools
+from typing import List, Dict, Tuple
+
 import matplotlib.pyplot as plt
-from typing import List, Dict, Tuple, Union
+import seaborn as sns
+import numpy as np
+import pandas as pd
+import streamlit as st
+
 from ngram import (
     NgramModel,
-    BackoffNgramModel,
     dataloader,
     eval_split,
-    sample_discrete,
     RNG,
+    sample_discrete,
 )
 
-# Initialize random number generator
-random = RNG(1337)
 
-
-@st.cache_data
-def load_data() -> (
-    Tuple[int, Dict[str, int], Dict[int, str], int, List[int], List[int], List[int]]
-):
+def validate_input(
+    seq_lens_text: str, smoothings_text: str
+) -> Tuple[List[int], List[float]]:
     """
-    Load and preprocess the data for the N-gram model.
-
-    Returns:
-        Tuple containing:
-        - vocab_size (int): Size of the vocabulary
-        - char_to_token (Dict[str, int]): Mapping from characters to token IDs
-        - token_to_char (Dict[int, str]): Mapping from token IDs to characters
-        - EOT_TOKEN (int): End-of-text token ID
-        - train_tokens (List[int]): Tokenized training data
-        - val_tokens (List[int]): Tokenized validation data
-        - test_tokens (List[int]): Tokenized test data
-    """
-    train_text: str = open("data/train.txt", "r").read()
-    uchars: List[str] = sorted(list(set(train_text)))
-    vocab_size: int = len(uchars)
-    char_to_token: Dict[str, int] = {c: i for i, c in enumerate(uchars)}
-    token_to_char: Dict[int, str] = {i: c for i, c in enumerate(uchars)}
-    EOT_TOKEN: int = char_to_token["\n"]
-
-    train_tokens: List[int] = [
-        char_to_token[c] for c in open("data/train.txt", "r").read()
-    ]
-    val_tokens: List[int] = [char_to_token[c] for c in open("data/val.txt", "r").read()]
-    test_tokens: List[int] = [
-        char_to_token[c] for c in open("data/test.txt", "r").read()
-    ]
-
-    return (
-        vocab_size,
-        char_to_token,
-        token_to_char,
-        EOT_TOKEN,
-        train_tokens,
-        val_tokens,
-        test_tokens,
-    )
-
-
-(
-    vocab_size,
-    char_to_token,
-    token_to_char,
-    EOT_TOKEN,
-    train_tokens,
-    val_tokens,
-    test_tokens,
-) = load_data()
-
-
-@st.cache_resource
-def train_model(seq_len: int, smoothing: float) -> NgramModel:
-    """
-    Train the N-gram model with the given parameters.
+    Validate and parse user input for sequence lengths and smoothing values.
 
     Args:
-        seq_len (int): The sequence length (N) for the N-gram model
-        smoothing (float): The smoothing parameter for handling unseen N-grams
+        seq_lens_text (str): User input for sequence lengths.
+        smoothings_text (str): User input for smoothing values.
 
     Returns:
-        NgramModel: The trained N-gram model
+        Tuple[List[int], List[float]]: Parsed sequence lengths and smoothing values.
+
+    Raises:
+        ValueError: If input is invalid or doesn't meet requirements.
     """
-    model = NgramModel(vocab_size, seq_len, smoothing)
-    for tape in dataloader(train_tokens, seq_len):
-        model.train(tape)
-    return model
+    try:
+        seq_lens = ast.literal_eval(seq_lens_text)
+        smoothings = ast.literal_eval(smoothings_text)
+    except (SyntaxError, ValueError):
+        raise ValueError("Sequence lengths and smoothings must be valid Python syntax.")
+
+    if not isinstance(seq_lens, list) or not isinstance(smoothings, list):
+        raise ValueError("Sequence lengths and smoothings must be Python lists.")
+
+    if not all(isinstance(x, int) and x > 0 for x in seq_lens):
+        raise ValueError("Sequence Lengths must be positive integers.")
+
+    if not all(isinstance(x, (int, float)) and x > 0 for x in smoothings):
+        raise ValueError("Smoothing values must be positive numbers.")
+
+    return seq_lens, smoothings
 
 
-def display_app_header() -> None:
-    """Display the header and introduction of the Streamlit app."""
-    st.title("N-gram Language Model Visualization")
-
-    st.markdown(
-        """
-    This app demonstrates the workings of an N-gram language model. N-gram models are a type of probabilistic language model used to predict the next item in a sequence based on the (n-1) previous items.
-
-    ### What is an N-gram model?
-    An N-gram model predicts the probability of a word based on the N-1 previous words. For example, a 3-gram (trigram) model would predict the next word based on the previous two words.
-
-    ### How does it work?
-    1. The model is trained on a corpus of text.
-    2. It counts the occurrences of each N-gram in the training data.
-    3. These counts are used to estimate probabilities for predicting the next word (or character, in our case) in a sequence.
-
-    Let's explore the model by adjusting parameters and seeing the results!
+def load_tokens(file_path: str) -> List[int]:
     """
-    )
+    Load and tokenize text from a file.
 
-
-def get_model_parameters() -> Tuple[int, float]:
-    """
-    Get model parameters from user input via Streamlit sidebar.
+    Args:
+        file_path (str): Path to the file containing text.
 
     Returns:
-        Tuple[int, float]: Sequence length and smoothing parameter
+        List[int]: List of tokenized characters.
     """
-    st.sidebar.header("Model Parameters")
-    seq_len: int = st.sidebar.slider(
-        "Sequence Length (N)",
-        min_value=2,
-        max_value=6,
-        value=3,
-        help="The 'N' in N-gram. Higher values consider more context but require more data.",
-    )
-    smoothing: float = st.sidebar.slider(
-        "Smoothing",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.1,
-        step=0.01,
-        help="Helps handle unseen N-grams. Higher values give more probability to unseen events.",
-    )
+    with open(file_path, "r") as f:
+        text = f.read()
+    return [char_to_token[c] for c in text]
 
-    st.sidebar.markdown(
-        """
-    ### Parameter Explanation
 
-    **Sequence Length (N)**: This determines how many previous characters the model considers when predicting the next character. A higher N allows the model to capture more complex patterns, but requires more data to train effectively.
-
-    **Smoothing**: This parameter helps the model handle N-grams it hasn't seen during training. Without smoothing, any unseen N-gram would have a probability of zero, which can be problematic. Smoothing assigns a small probability to these unseen events.
+def evaluate_hyperparameters(
+    seq_lens: List[int],
+    smoothings: List[float],
+    train_tokens: List[int],
+    val_tokens: List[int],
+) -> Dict:
     """
-    )
-
-    return seq_len, smoothing
-
-
-def display_model_evaluation(model: NgramModel) -> None:
-    """
-    Display the model's evaluation metrics.
+    Evaluate different combinations of hyperparameters.
 
     Args:
-        model (NgramModel): The trained N-gram model
+        seq_lens (List[int]): List of sequence lengths to evaluate.
+        smoothings (List[float]): List of smoothing values to evaluate.
+        train_tokens (List[int]): Tokenized training data.
+        val_tokens (List[int]): Tokenized validation data.
+
+    Returns:
+        Dict: Best hyperparameters and their performance.
     """
-    st.header("Model Evaluation")
-    st.markdown(
-        """
-    The model's performance is evaluated using the average negative log-likelihood (loss) on different datasets. 
-    Lower values indicate better performance.
-    """
+    best_loss = float("inf")
+    best_kwargs = {}
+    iterations = len(seq_lens) * len(smoothings)
+
+    st.write("## Hyperparameter Evaluation Results")
+    progress_bar = st.progress(0.0, "")
+    df_placeholder = st.empty()
+    df = pd.DataFrame(
+        columns=["Sequence Length", "Smoothing", "Training Loss", "Validation Loss"]
     )
 
-    train_loss: float = eval_split(model, train_tokens)
-    val_loss: float = eval_split(model, val_tokens)
-    test_loss: float = eval_split(model, test_tokens)
+    for i, (seq_len, smoothing) in enumerate(itertools.product(seq_lens, smoothings)):
+        model = NgramModel(vocab_size, seq_len, smoothing)
+        for tape in dataloader(train_tokens, seq_len):
+            model.train(tape)
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Train Loss", f"{train_loss:.4f}")
-    col2.metric("Validation Loss", f"{val_loss:.4f}")
-    col3.metric("Test Loss", f"{test_loss:.4f}")
+        train_loss = eval_split(model, train_tokens)
+        val_loss = eval_split(model, val_tokens)
 
-    st.markdown(
-        """
-    - **Train Loss**: How well the model performs on the data it was trained on.
-    - **Validation Loss**: Performance on unseen data, used to tune hyperparameters.
-    - **Test Loss**: Final evaluation on completely unseen data.
-
-    If train loss is much lower than validation/test loss, the model might be overfitting.
-    """
-    )
-
-
-def generate_text(model: NgramModel, seq_len: int) -> None:
-    """
-    Generate text using the trained model and display it.
-
-    Args:
-        model (NgramModel): The trained N-gram model
-        seq_len (int): The sequence length (N) of the model
-    """
-    st.header("Text Generation")
-    st.markdown(
-        """
-    Now, let's use our trained model to generate some text! The model will predict each character based on the previous N-1 characters.
-    """
-    )
-    num_chars: int = st.slider(
-        "Number of characters to generate", min_value=10, max_value=500, value=100
-    )
-    if st.button("Generate Text"):
-        tape: List[int] = [EOT_TOKEN] * (seq_len - 1)
-        generated_text: str = ""
-        for _ in range(num_chars):
-            probs: np.ndarray = model(tape)
-            coinf: float = random.random()
-            probs_list: List[float] = probs.tolist()
-            next_token: int = sample_discrete(probs_list, coinf)
-            next_char: str = token_to_char[next_token]
-            generated_text += next_char
-            tape.append(next_token)
-            if len(tape) > seq_len - 1:
-                tape = tape[1:]
-        st.text_area("Generated Text", generated_text, height=200)
-        st.markdown(
-            """
-        This text is generated character by character. For each prediction:
-        1. The model looks at the previous N-1 characters.
-        2. It calculates the probability distribution for the next character.
-        3. It randomly selects a character based on these probabilities.
-        4. The process repeats for the desired number of characters.
-        """
+        progress_bar.progress(
+            (i + 1) / iterations, f"Iteration {i + 1} of {iterations}"
         )
-
-
-def visualize_probabilities(model: NgramModel, seq_len: int) -> None:
-    """
-    Visualize the N-gram probabilities of the model.
-
-    Args:
-        model (NgramModel): The trained N-gram model
-        seq_len (int): The sequence length (N) of the model
-    """
-    st.header("N-gram Probabilities Visualization")
-    st.markdown(
-        """
-    This heatmap visualizes the probabilities of the next character given different contexts. 
-    Each row represents a different context (previous N-1 characters), and each column represents a possible next character.
-    Brighter colors indicate higher probabilities.
-    """
-    )
-    if st.button("Visualize Probabilities"):
-        counts: np.ndarray = model.counts + model.smoothing
-        probs: np.ndarray = counts / counts.sum(axis=-1, keepdims=True)
-
-        fig, ax = plt.subplots(figsize=(10, 8))
-        im = ax.imshow(probs.reshape(-1, vocab_size), cmap="viridis", aspect="auto")
-        ax.set_xlabel("Next Character")
-        ax.set_ylabel("Context (Previous Characters)")
-        ax.set_title(f"{seq_len}-gram Probabilities")
-        plt.colorbar(im)
-        st.pyplot(fig)
-        st.markdown(
-            """
-        Interpreting the heatmap:
-        - Each row represents a unique context (combination of N-1 previous characters).
-        - Each column represents a possible next character.
-        - Brighter colors (yellow) indicate higher probabilities, while darker colors (blue) indicate lower probabilities.
-        - You can observe patterns in the language model's predictions based on different contexts.
-        """
-        )
-
-
-def display_model_details(model: NgramModel, seq_len: int, smoothing: float) -> None:
-    """
-    Display detailed information about the model.
-
-    Args:
-        model (NgramModel): The trained N-gram model
-        seq_len (int): The sequence length (N) of the model
-        smoothing (float): The smoothing parameter of the model
-    """
-    st.header("Model Details")
-    st.json(
-        {
-            "Vocabulary Size": vocab_size,
+        df.loc[len(df)] = {
             "Sequence Length": seq_len,
             "Smoothing": smoothing,
-            "Total Parameters": model.counts.size,
+            "Training Loss": train_loss,
+            "Validation Loss": val_loss,
+        }
+        df_placeholder.dataframe(df, height=int(35.2 * (iterations + 1)))
+
+        if val_loss < best_loss:
+            best_loss = val_loss
+            best_kwargs = {"seq_len": seq_len, "smoothing": smoothing}
+
+    return best_kwargs
+
+
+def generate_sample(model: NgramModel, seq_len: int, num_chars: int = 200) -> str:
+    """
+    Generate a sample text from the trained model.
+
+    Args:
+        model (NgramModel): Trained N-gram model.
+        seq_len (int): Sequence length used in the model.
+        num_chars (int): Number of characters to generate.
+
+    Returns:
+        str: Generated text sample.
+    """
+    tape = [EOT_TOKEN] * (seq_len - 1)
+    sample = ""
+    for _ in range(num_chars):
+        probs = model(tape)
+        coinf = rng.random()
+        next_token = sample_discrete(probs.tolist(), coinf)
+        next_char = token_to_char[next_token]
+        tape.append(next_token)
+        if len(tape) > seq_len - 1:
+            tape = tape[1:]
+        sample += next_char
+    return sample
+
+
+def plot_heatmap(probs: np.ndarray) -> None:
+    """
+    Plot a heatmap of the model's conditional probabilities.
+
+    Args:
+        probs (np.ndarray): Probability matrix from the trained model.
+    """
+    expected_shape = (27, 27, 27, 27)
+    if probs.shape != expected_shape:
+        st.error(
+            f"Unexpected probability matrix shape. Expected {expected_shape}, but got {probs.shape}."
+        )
+        st.stop()
+
+    reshaped = probs.reshape(27**2, 27**2)
+    fig, ax = plt.subplots(figsize=(8, 7))
+    im = ax.imshow(reshaped, cmap="hot", interpolation="nearest")
+    ax.axis("off")
+
+    cbar = fig.colorbar(im, ax=ax, shrink=0.8)
+    cbar.set_label("Probability", rotation=270, labelpad=15)
+
+    st.pyplot(fig)
+
+
+def plot_probability_distribution(
+    model: NgramModel, tape: List[int], name: str
+) -> None:
+    """
+    Plot the probability distribution of the next token given the current state.
+
+    Args:
+        model (NgramModel): Trained N-gram model.
+        tape (List[int]): Current state (sequence of tokens).
+        name (str): Current generated name.
+    """
+    probs = model(tape)
+    chars = [token_to_char[i] for i in range(len(probs))]
+    df = pd.DataFrame(
+        {
+            "Token": chars,
+            "Probability": probs,
         }
     )
-    st.markdown(
-        """
-    - **Vocabulary Size**: The number of unique characters in our dataset.
-    - **Sequence Length**: The 'N' in N-gram, determining how much context we use for predictions.
-    - **Smoothing**: The value added to all counts to handle unseen N-grams.
-    - **Total Parameters**: The total number of probability values our model stores.
 
-    A larger vocabulary or sequence length dramatically increases the number of parameters, which can lead to better performance but requires more data and computation.
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write(f"##### Step: {len(name) + 1}")
+        st.write(f"Current state: '{name}'")
+        st.write(f"Tape of input tokens to model: {tape}")
+        st.write(f"Characters shown to model: {[token_to_char[i] for i in tape]}")
+        df_display = df.copy()
+        df_display["Probability"] = df_display["Probability"].apply(
+            lambda x: f"{x:.4g}"
+        )
+        st.dataframe(df_display.T)
+
+    with col2:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        norm = plt.Normalize(df["Probability"].min(), df["Probability"].max())
+        sm = plt.cm.ScalarMappable(cmap="RdYlGn", norm=norm)
+        sm.set_array([])
+
+        colors = sm.to_rgba(df["Probability"]).tolist()
+
+        sns.barplot(x="Token", y="Probability", hue="Token", legend=False, data=df, palette=colors, ax=ax)
+
+        ax.set_xlabel("Token")
+        ax.set_ylabel("Probability")
+        ax.set_title(f'Probability of Next Token (From State: "{name}")')
+        ax.set_ylim(0, 1)
+        plt.xticks(rotation=90)
+
+        st.pyplot(fig)
+
+
+def generate_name_step_by_step(model: NgramModel, seq_len: int) -> str:
+    """
+    Generate a name step-by-step, visualizing each step.
+
+    Args:
+        model (NgramModel): Trained N-gram model.
+        seq_len (int): Sequence length used in the model.
+
+    Returns:
+        str: Generated name.
+    """
+    tape = [EOT_TOKEN] * (seq_len - 1)
+    name = ""
+
+    st.write("### Step-by-step name generation")
+    st.write(
+        """
+    At each step, the model looks at the last (N - 1) tokens and outputs
+    a probability distribution for the next token. The model generates unique
+    names by sampling from this distribution. Let's visualize this process step-by-step.
     """
     )
 
+    while len(name) == 0 or name[-1] != "\n":
+        plot_probability_distribution(model, tape, name)
 
-def main() -> None:
-    """Main function to run the Streamlit app."""
-    display_app_header()
-    seq_len, smoothing = get_model_parameters()
-    model = train_model(seq_len, smoothing)
-    display_model_evaluation(model)
-    generate_text(model, seq_len)
-    visualize_probabilities(model, seq_len)
-    display_model_details(model, seq_len, smoothing)
+        # Sample the next token
+        probs = model(tape)
+        coinf = rng.random()
+        next_token = sample_discrete(probs.tolist(), coinf)
+        next_char = token_to_char[next_token]
 
-    st.markdown(
+        # Update the tape and name
+        tape.append(next_token)
+        if len(tape) > seq_len - 1:
+            tape = tape[1:]
+        name += next_char
+
+        st.write(f"Sampled next token: {next_token}, Next character: '{next_char}'")
+        st.write("---")
+
+    return name.strip()
+
+
+def main():
+    st.set_page_config("N-gram Language Model Name Generator", page_icon="🔤")
+
+    st.write(
         """
-    ### Experiment and Learn!
+    # N-gram Language Model Name Generator
 
-    Try adjusting the Sequence Length and Smoothing parameters in the sidebar. Observe how they affect:
-    1. The model's performance (train, validation, and test loss)
-    2. The quality of generated text
-    3. The patterns in the probability heatmap
+    This app trains an N-gram language model on a dataset of names and generates new, unique names based on the learned patterns.
+    Adjust the parameters to see how they affect the model's performance and the generated names.
 
-    This hands-on experimentation will help you understand the trade-offs in N-gram language modeling!
+    Every combination of `Sequence Lengths` and `Smoothings` set will
+    be evaluated to determine the best combination. The model will then
+    be retrained using the optimal hyperparameters and generate a heat
+    map showing conditional probabilities of the N-gram model.
     """
     )
+
+    st.sidebar.write("## Parameters")
+    seq_lens_text = st.sidebar.text_input("Sequence Lengths", "[3, 4, 5]")
+    smoothings_text = st.sidebar.text_input("Smoothings", "[0.03, 0.1, 0.3, 1.0]")
+
+    try:
+        seq_lens, smoothings = validate_input(seq_lens_text, smoothings_text)
+    except ValueError as e:
+        st.sidebar.error(str(e))
+        st.stop()
+
+    random_seed = st.sidebar.number_input("Random Seed", 1337)
+    test_tokens_path = st.sidebar.text_input("Test Tokens Path", "data/test.txt")
+    val_tokens_path = st.sidebar.text_input("Validation Tokens Path", "data/val.txt")
+    train_tokens_path = st.sidebar.text_input("Training Tokens Path", "data/train.txt")
+
+    iterations = len(seq_lens) * len(smoothings)
+    st.sidebar.write(f"Total Iterations: {iterations}")
+
+    global train_text, uchars, vocab_size, char_to_token, token_to_char, EOT_TOKEN, rng
+
+    train_text = open(train_tokens_path, "r").read()
+    assert all(
+        c == "\n" or ("a" <= c <= "z") for c in train_text
+    ), "Invalid characters in training data"
+    uchars = sorted(list(set(train_text)))
+    vocab_size = len(uchars)
+    char_to_token = {c: i for i, c in enumerate(uchars)}
+    token_to_char = {i: c for i, c in enumerate(uchars)}
+    EOT_TOKEN = char_to_token["\n"]
+
+    test_tokens = load_tokens(test_tokens_path)
+    val_tokens = load_tokens(val_tokens_path)
+    train_tokens = load_tokens(train_tokens_path)
+
+    rng = RNG(random_seed)
+
+    if st.button("Train Model and Generate Names"):
+        best_kwargs = evaluate_hyperparameters(
+            seq_lens, smoothings, train_tokens, val_tokens
+        )
+
+        st.write("## Best Hyperparameters")
+        st.dataframe(
+            {
+                "Hyperparameter": ["Sequence Length", "Smoothing"],
+                "Value": [best_kwargs["seq_len"], best_kwargs["smoothing"]],
+            }
+        )
+
+        model = NgramModel(vocab_size, **best_kwargs)
+        for tape in dataloader(train_tokens, best_kwargs["seq_len"]):
+            model.train(tape)
+
+        st.write("## Generated Names")
+        sample = generate_sample(model, best_kwargs["seq_len"])
+        st.text_area("", sample, height=300)
+
+        st.write("## Model Evaluation Results")
+        test_loss = eval_split(model, test_tokens)
+        test_perplexity = np.exp(test_loss)
+        df = pd.DataFrame(
+            {
+                "Metric": ["Test Loss", "Test Perplexity"],
+                "Value": [test_loss, test_perplexity],
+            }
+        )
+        st.dataframe(df)
+
+        counts = model.counts + model.smoothing
+        probs = counts / counts.sum(axis=-1, keepdims=True)
+        plot_heatmap(probs)
+
+        st.write(
+            """
+        ## Understanding the Heatmap
+
+        The heatmap visualizes the conditional probabilities learned by the N-gram model:
+
+        - Each pixel represents the probability of a specific sequence of characters.
+        - Brighter colors indicate higher probabilities, darker colors show lower probabilities.
+        - The x and y axes represent different character sequences.
+        - Bright spots reveal common character patterns in names.
+        - Dark areas indicate rare or unlikely character combinations.
+
+        This visualization helps us understand how the model has captured the statistical patterns of name structures from the training data.
+        """
+        )
+
+        st.write("## How the N-Gram Model Generates Names")
+        st.write(
+            f"### Using Best Model (N={best_kwargs['seq_len']}, smoothing={best_kwargs['smoothing']})"
+        )
+        st.write(
+            """
+        The N-gram model generates names by following these steps:
+
+        1. Start with a sequence of (N-1) tokens, usually representing the start of a name.
+        2. For each step:
+           a. The model looks at the last (N-1) tokens.
+           b. It outputs a probability distribution for the next token.
+           c. A token is randomly sampled from this distribution.
+           d. The sampled token is added to the sequence, and the process repeats.
+        3. The generation stops when an end-of-text token is sampled.
+
+        This process allows the model to create unique names that follow the patterns it learned from the training data.
+        """
+        )
+
+        st.write("##### Special Note")
+        st.write(
+            "The model outputs tokens, which in this case, correspond to characters. In more complex models like GPT, tokens can represent more than one character. In our case, here is a reference for what value each token index maps to."
+        )
+
+        st.write("### Token to Character Mapping")
+        df = pd.DataFrame(
+            {
+                "Token Index": [char_to_token[c] for c in uchars],
+                "Character": [r"\n" if c == "\n" else c for c in uchars],
+            }
+        )
+        
+        st.dataframe(df.T)
+
+        st.write("## Interactive Name Generation")
+        st.write("Let's generate a name step-by-step to see how the model works.")
+        generated_name = generate_name_step_by_step(model, best_kwargs["seq_len"])
+        st.write(f"### Final generated name: {generated_name}")
 
 
 if __name__ == "__main__":
